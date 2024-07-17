@@ -7,9 +7,10 @@ import shutil
 import patoolib
 from patoolib.util import PatoolError
 from tqdm import tqdm
+from PyPDF2 import PdfMerger
+import logging
 
 # Suppress patoolib INFO messages
-import logging
 logging.getLogger('patool').setLevel(logging.ERROR)
 
 def extract_files(input_folder):
@@ -23,7 +24,7 @@ def extract_files(input_folder):
         key=lambda x: os.path.basename(x).lower()
     )
 
-    for archive_path in tqdm(archive_files, desc="Extracting archives"):
+    for archive_path in tqdm(archive_files, desc="Extracting archives", ncols=100, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'):
         archive_folder = os.path.join(temp_dir, str(folder_index))
 
         if archive_path.endswith('.cbz'):
@@ -53,20 +54,54 @@ def extract_files(input_folder):
 
     return extracted_images, temp_dir
 
-def convert_to_pdf(images, output_pdf_path):
-    image_objs = [Image.open(image).convert('RGB') for image in tqdm(images, desc="Opening images")]
+def convert_to_pdf(images, output_pdf_path, batch_size=100):
+    """
+    Convert a list of images to a single PDF file.
 
-    if image_objs:
-        first_image = image_objs[0]
-        remaining_images = image_objs[1:]
+    Parameters:
+    images (list of str): List of image file paths.
+    output_pdf_path (str): The output PDF file path.
+    batch_size (int): Number of images to process at a time to avoid memory errors.
+    """
+    if not images:
+        print("No images to convert.")
+        return
 
-        with tqdm(total=len(remaining_images), desc="Saving PDF") as pbar:
-            first_image.save(output_pdf_path, save_all=True, append_images=remaining_images)
-            pbar.update(len(remaining_images))
+    temp_dir = tempfile.mkdtemp()
+    temp_pdfs = []
+
+    for i in tqdm(range(0, len(images), batch_size), desc="Processing image batches", ncols=100, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'):
+        batch_images = images[i:i + batch_size]
+        image_objs = []
+
+        for image in tqdm(batch_images, desc=f"Processing batch {i // batch_size + 1:02d}", leave=False, ncols=100, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'):
+            try:
+                img = Image.open(image).convert('RGB')
+                image_objs.append(img)
+            except Exception as e:
+                print(f"Failed to open image {image}: {e}")
+
+        batch_pdf_path = os.path.join(temp_dir, f"batch_{i // batch_size + 1}.pdf")
+        image_objs[0].save(batch_pdf_path, save_all=True, append_images=image_objs[1:], resolution=100.0)
+        temp_pdfs.append(batch_pdf_path)
+
+    # Combine all batch PDFs into a single PDF
+    merger = PdfMerger()
+    for pdf in temp_pdfs:
+        merger.append(pdf)
+
+    merger.write(output_pdf_path)
+    merger.close()
+
+    # Remove temporary batch PDFs and directory
+    shutil.rmtree(temp_dir)
+
+    print(f"PDF saved to {output_pdf_path}")
 
 def process_folder(input_folder):
-    output_pdf_name = os.path.basename(input_folder.rstrip('/\\')) + '.pdf'
-    output_pdf_path = os.path.join(os.path.dirname(input_folder), output_pdf_name)
+    parent_dir = os.path.dirname(input_folder.rstrip('/\\'))
+    folder_name = os.path.basename(input_folder.rstrip('/\\'))
+    output_pdf_path = os.path.join(parent_dir, f"{folder_name}.pdf")
     images, temp_dir = extract_files(input_folder)
     convert_to_pdf(images, output_pdf_path)
     shutil.rmtree(temp_dir)  # Clean up the temporary directory
@@ -79,6 +114,8 @@ def main(input_folders):
             process_folder(folder)
         else:
             print(f'Skipping invalid folder: {folder}')
+    
+    print("Worst comic book converting script, ever. Thank you.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Convert CBR and CBZ files in folders to single PDFs.')
